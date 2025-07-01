@@ -150,7 +150,9 @@ const ChatBotClient = () => {
 					</Button>
 				</SubheaderRight>
 			</Subheader>
-			<Container className='flex shrink-0 grow basis-auto flex-col pb-0'>
+			<Container
+				className='flex shrink-0 grow basis-auto flex-col pb-0'
+				style={{ fontSize: '16px', fontWeight: '500' }}>
 				{generateChat(listQuestions)}
 				<AIChatInputContainerCommon>
 					<FieldWrap
