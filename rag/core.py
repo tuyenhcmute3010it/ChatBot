@@ -1,19 +1,18 @@
 import pymongo
-import google.generativeai as genai
 from IPython.display import Markdown
-import textwrap
 from embeddings import SentenceTransformerEmbedding, EmbeddingConfig
+from sentence_transformers.util import cos_sim
+import traceback
 
-class RAG():
+class RAG:
     def __init__(self, 
-            mongodbUri: str,
-            dbName: str,
-            dbCollection: str,
-            llm,
-            embeddingName: str ='keepitreal/vietnamese-sbert',
-        ):
+                 mongodbUri: str,
+                 dbName: str,
+                 dbCollection: str,
+                 llm,
+                 embeddingName: str = 'keepitreal/vietnamese-sbert'):
         self.client = pymongo.MongoClient(mongodbUri)
-        self.db = self.client[dbName] 
+        self.db = self.client[dbName]
         self.collection = self.db[dbCollection]
         self.embedding_model = SentenceTransformerEmbedding(
             EmbeddingConfig(name=embeddingName)
@@ -23,118 +22,108 @@ class RAG():
     def get_embedding(self, text):
         if not text.strip():
             return []
+        try:
+            embedding = self.embedding_model.encode(text)
+            return embedding.tolist()
+        except Exception as e:
+            print(f"❌ Error generating embedding: {e}")
+            return []
 
-        embedding = self.embedding_model.encode(text)
-        return embedding.tolist()
-
-    def vector_search(
-            self, 
-            user_query: str, 
-            limit=4):
+    def vector_search(self, user_query: str, limit=5, topic=None):
         """
-        Perform a vector search in the MongoDB collection based on the user query.
-
-        Args:
-        user_query (str): The user's query string.
-
-        Returns:
-        list: A list of matching documents.
+        Vector search using cosine similarity (manual method for Free Tier)
         """
-
-        # Generate embedding for the user query
         query_embedding = self.get_embedding(user_query)
+        if not query_embedding:
+            return []
 
-        if query_embedding is None:
-            return "Invalid query or embedding generation failed."
+        # Get all documents with embedding
+        filter_query = {"embedding": {"$exists": True, "$type": "array"}}
+        if topic:
+            filter_query["topic"] = topic
+        docs = list(self.collection.find(filter_query))
 
-        # Define the vector search pipeline
-        vector_search_stage = {
-            "$vectorSearch": {
-                "index": "vector_index",
-                "queryVector": query_embedding,
-                "path": "embedding",
-                "numCandidates": 400,
-                "limit": limit,
-            }
-        }
+        # Calculate cosine similarity
+        scored = []
+        for doc in docs:
+            score = cos_sim([query_embedding], [doc["embedding"]])[0][0].item()
+            doc["score"] = score
+            scored.append(doc)
 
-        unset_stage = {
-            "$unset": "embedding" 
-        }
+        top_docs = sorted(scored, key=lambda d: d["score"], reverse=True)[:limit]
+        for doc in top_docs:
+            doc.pop("embedding", None)
+        return top_docs
 
-        project_stage = {
-            "$project": {
-                "_id": 0,  
-                "title": 1, 
-                # "product_specs": 1,
-                "color_options": 1,
-                "current_price": 1,
-                "product_promotion": 1,
-                "score": {
-                    "$meta": "vectorSearchScore"
-                }
-            }
-        }
-
-        pipeline = [vector_search_stage, unset_stage, project_stage]
-
-        # Execute the search
-        results = self.collection.aggregate(pipeline)
-
-        return list(results)
-
-    def enhance_prompt(self, query):
-        get_knowledge = self.vector_search(query, 10)
-        enhanced_prompt = ""
-        i = 0
-        for result in get_knowledge:
-            if result.get('current_price'):
-                i += 1
-                enhanced_prompt += f"\n {i}) Tên: {result.get('title')}"
-                
-                if result.get('current_price'):
-                    enhanced_prompt += f", Giá: {result.get('current_price')}"
-                else:
-                    # Mock up data
-                    # Retrieval model pricing from the internet.
-                    enhanced_prompt += f", Giá: Liên hệ để trao đổi thêm!"
-                
-                if result.get('product_promotion'):
-                    enhanced_prompt += f", Ưu đãi: {result.get('product_promotion')}"
-        return enhanced_prompt
-    
-    def generate_content(self, messages):
-        if hasattr(self.llm, "generate_content"):
-            # Gemini
-            return self.llm.generate_content(messages)
+    def enhance_prompt(self, user_query: str):
+        search_results = self.vector_search(user_query, limit=5)
+        context = ""
+        if isinstance(search_results, str):
+            context = search_results
         else:
-            # GPT - chuyển parts -> content
-            valid_roles = {"system", "user", "assistant", "function", "tool", "developer"}
-            gpt_messages = []
+            for i, item in enumerate(search_results, 1):
+                title = item.get('title', 'N/A')
+                price = item.get('current_price', 'Liên hệ')
+                promotions = str(item.get('product_promotion', '')).strip() or 'Không có'
+                colors = ', '.join(item.get('color_options', [])) if isinstance(item.get('color_options'), list) else 'Không có'
+                specs = item.get('product_specs', '').replace("<br>", "; ") if isinstance(item.get('product_specs'), str) else 'Không có'
+                url = item.get('url', '')
 
-            for m in messages:
-                role = m.get("role")
+                context += f"### {i}. **{title}**\n"
+                context += f"- #### **Giá**: {price}\n"
+                context += f"- #### **Ưu đãi**: {promotions}\n"
+                context += f"- #### **Màu sắc**: {colors}\n"
+                context += f"- #### **Thông số**: {specs}\n"
+                if url:
+                    context += f"- *[Xem chi tiết sản phẩm]({url})*\n"
+                context += "\n"
 
-                # Xử lý role không hợp lệ
-                if role not in valid_roles:
-                    if role == "model":
-                        role = "assistant"
-                    else:
-                        continue
+        final_prompt = f"""Bạn là một chuyên gia tư vấn bán điện thoại tại cửa hàng **DBIZ**.
 
-                parts = m.get("parts", [])
-                content = "\n".join(
-                    p.get("text", "") for p in parts if isinstance(p, dict) and "text" in p
-                )
-                gpt_messages.append({"role": role, "content": content})
+**Câu hỏi của khách hàng:** _{user_query}_
 
-            response = self.llm.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=gpt_messages,
-            )
-            return type("Response", (object,), {"text": response.choices[0].message.content})()
+Dưới đây là chi tiết sản phẩm:
 
+{context}
+Vui lòng trả lời khách một cách thân thiện, dễ hiểu và rõ ràng!  
+Nếu khách hàng muốn biết thêm, hãy mời họ bấm vào link để xem chi tiết sản phẩm.
+"""
+        return final_prompt
 
-    def _to_markdown(text):
-        text = text.replace('•', '  *')
-        return Markdown(textwrap.indent(text, '> ', predicate=lambda _: True))
+    def run(self, query, topic=None):
+        try:
+            print(f"🧠 [run()] Query: {query}")
+            if topic:
+                print(f"🧠 [run()] Topic: {topic}")
+
+            query_embedding = self.get_embedding(query)
+            if not query_embedding:
+                print("⚠️ [run()] Failed to generate query embedding.")
+                return "❌ Không thể tạo embedding cho câu hỏi."
+
+            print(f"🧠 [run()] Embedding OK, length: {len(query_embedding)}")
+
+            search_results = self.vector_search(query, limit=10, topic=topic)
+            print(f"🧠 [run()] Retrieved {len(search_results)} results")
+
+            context = "\n\n".join([
+                f"{doc['content']} (Nguồn: {doc.get('url', 'không rõ')})"
+                for doc in search_results if "content" in doc
+            ])
+            if not context:
+                print("⚠️ [run()] No relevant documents found.")
+                context = "Không tìm thấy thông tin phù hợp trong cơ sở dữ liệu."
+                
+            print("===================================================== {Start Data from Db} ========================================")
+            print(context)
+            print("===================================================== {End Data from Db} ========================================")
+            print("===================================================== {Start Truyền dữ liệu lên LLM từ Prompt và Data trên DB} ========================================")
+            prompt = f"""Khách hỏi: \"{query}\"\n\nDưới đây là một số thông tin liên quan:\n\n{context}\n\nTrả lời một cách tự nhiên và chi tiết."""
+            print(prompt)
+            print("===================================================== {End Truyền dữ liệu lên LLM từ Prompt và Data trên DB} ========================================")
+            return prompt
+
+        except Exception as e:
+            print("❌ [run()] Exception occurred:", e)
+            traceback.print_exc()
+            return f"❌ Lỗi khi thực hiện tìm kiếm vector: {str(e)}"

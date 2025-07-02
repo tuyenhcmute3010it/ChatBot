@@ -1,6 +1,4 @@
 ##https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/text-embeddings
-
-
 from embeddings import APIBaseEmbedding
 import os
 import openai

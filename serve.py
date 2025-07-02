@@ -1,75 +1,88 @@
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-import os
-import traceback
-
-# === Google & OpenAI SDK ===
-import google.generativeai as genai
+import os, traceback, re
+from datetime import datetime
 import openai
-from openai import OpenAI
-
-# === RAG system ===
 from rag.core import RAG
-from embeddings import OpenAIEmbedding
+import google.generativeai as genai
+from openai import OpenAI
+from rag.core import RAG
 from embeddings.sbert import SBERTEmbedding
 from semantic_router import SemanticRouter, Route
 from semantic_router.samples import productsSample, chitchatSample
 from reflection import Reflection
-
-# === MongoDB & SBERT for vector search ===
 from sentence_transformers import SentenceTransformer
 import pymongo
-
+from sentence_transformers.util import cos_sim
 # === Load .env ===
 load_dotenv()
-print("✅ OPEN_AI_KEY:", os.getenv('OPEN_AI_KEY'))
-
-# === ENV CONFIG ===
 MONGODB_URI = os.getenv('MONGODB_URI')
 DB_NAME = os.getenv('DB_NAME')
-DB_COLLECTION = os.getenv('DB_COLLECTION')
-LLM_KEY = os.getenv('GEMINI_KEY')
-OPEN_AI_KEY = os.getenv('OPEN_AI_KEY')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL') or 'keepitreal/vietnamese-sbert'
+OPEN_AI_KEY = os.getenv('OPEN_AI_KEY')
+LLM_KEY = os.getenv('GEMINI_KEY')
 
-# === Embeddings & Routing ===
+# === MongoDB setup ===
+client = pymongo.MongoClient(MONGODB_URI)
+product_collection = client[DB_NAME]["embedding_for_vector_search"]
+semantic_collection = client[DB_NAME]["all_embeddings"]
+
+# === Embedding & LLM setup ===
+embedding_model = SentenceTransformer(EMBEDDING_MODEL)
 sbertEmbedding = SBERTEmbedding(EMBEDDING_MODEL)
-semanticRouter = SemanticRouter(
-    sbertEmbedding,
-    routes=[
-        Route(name='products', samples=productsSample),
-        Route(name='chitchat', samples=chitchatSample)
-    ]
-)
-
-# === LLMs ===
 genai.configure(api_key=LLM_KEY)
 llm = OpenAI(api_key=OPEN_AI_KEY)
-gpt = openai.OpenAI(api_key=OPEN_AI_KEY)
-reflection = Reflection(llm=gpt)
+openai_client = OpenAI(api_key=OPEN_AI_KEY)
+reflection = Reflection(llm=openai_client)
 
-# === RAG ===
+# === RAG setup ===
 rag = RAG(
     mongodbUri=MONGODB_URI,
     dbName=DB_NAME,
-    dbCollection=DB_COLLECTION,
+    dbCollection="all_embeddings",
     embeddingName=EMBEDDING_MODEL,
     llm=llm,
 )
+print("🧪 Has method run:", hasattr(rag, "run"))
 
-# === Mongo Vector Search for /ask ===
-client = pymongo.MongoClient(os.getenv("MONGODB_URI"))
-mongo_collection = client["hoanghamobilenew"]["embedding_for_vector_search"]
-embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-openai_client = OpenAI(api_key=OPEN_AI_KEY)
+# def slugify(text):
+#     return re.sub(r'\W+', '-', text.lower()).strip('-')
 
-# === App setup ===
+def load_dynamic_samples(collection, sample_limit=200):
+    print("=== Dynamic Topics from MongoDB ===")
+    topic_samples = {}
+    cursor = collection.find(
+        {"content": {"$exists": True, "$ne": ""}, "topic": {"$exists": True, "$ne": ""}},
+        {"_id": 0, "content": 1, "topic": 1}
+    )
+    for doc in cursor:
+        topic = doc["topic"]
+        content = doc["content"].strip()
+        if not content or not topic:
+            continue
+        if topic not in topic_samples:
+            topic_samples[topic] = []
+        if len(topic_samples[topic]) < sample_limit:
+            topic_samples[topic].append(content)
+    return topic_samples
+
+def create_routes_from_samples(samples_dict):
+    return [Route(name=topic, samples=samples) for topic, samples in samples_dict.items()]
+
+# === Semantic Router setup ===
+static_routes = [
+    Route(name="products", samples=productsSample),
+    Route(name="chitchat", samples=chitchatSample),
+]
+dynamic_samples = load_dynamic_samples(semantic_collection)
+dynamic_routes = create_routes_from_samples(dynamic_samples)
+semanticRouter = SemanticRouter(sbertEmbedding, static_routes + dynamic_routes)
+
+# === Flask App ===
 app = Flask(__name__)
 CORS(app)
 
-# === Helper for /ask ===
 def get_embedding(text):
     return embedding_model.encode(text).tolist() if text.strip() else []
 
@@ -95,112 +108,171 @@ def vector_search(query, limit=5):
             "score": {"$meta": "vectorSearchScore"},
         }}
     ]
-    return list(mongo_collection.aggregate(pipeline))
+    return list(product_collection.aggregate(pipeline))
 
 def build_prompt(user_query, search_results):
     context = ""
     for i, item in enumerate(search_results, 1):
         title = item.get('title', 'N/A')
         price = item.get('current_price', 'Liên hệ')
-        promotions = str(item.get('product_promotion', '')).strip() or 'Không có'
+        promo = item.get('product_promotion', '') or 'Không có'
         colors = ', '.join(item.get('color_options', [])) if isinstance(item.get('color_options'), list) else 'Không có'
         specs = item.get('product_specs', '').replace("<br>", "; ") if isinstance(item.get('product_specs'), str) else 'Không có'
         url = item.get('url', '')
 
         context += f"### {i}. **{title}**\n"
-        context += f"- **Giá**: {price}\n"
-        context += f"- **Ưu đãi**: {promotions}\n"
-        context += f"- **Màu sắc**: {colors}\n"
-        context += f"- **Thông số**: {specs}\n"
+        context += f"- #### **Giá**: {price}\n"
+        context += f"- #### **Ưu đãi**: {promo}\n"
+        context += f"- #### **Màu sắc**: {colors}\n"
+        context += f"- #### **Thông số**: {specs}\n"
         if url:
-            context += f"- **[Xem chi tiết sản phẩm]({url})**\n"
+            context += f"- *[Xem chi tiết sản phẩm]({url})*\n"
         context += "\n"
 
-    return f"""Bạn là một chuyên gia tư vấn bán điện thoại tại cửa hàng **DBIZ**.
+    return f"""Bạn là chuyên gia tư vấn của **DBIZ**.
+**Khách hỏi:** _{user_query}_
 
-**Câu hỏi của khách hàng:** _{user_query}_
-
-Dưới đây là các sản phẩm liên quan:
+Dưới đây là sản phẩm phù hợp:
 
 {context}
-Vui lòng trả lời khách một cách thân thiện, dễ hiểu và rõ ràng!  
-Nếu khách hàng muốn biết thêm, hãy mời họ bấm vào link để xem chi tiết sản phẩm.
+Hãy trả lời thân thiện, rõ ràng và gợi ý khách bấm vào link để xem thêm nếu cần.
 """
 
-# === Endpoint: /api/search (semantic + RAG + chitchat) ===
+def save_chat_log(messages):
+    try:
+        client[DB_NAME]["chat_logs"].insert_one({
+            "messages": messages,
+            "timestamp": datetime.utcnow()
+        })
+    except Exception as e:
+        print("❌ Failed to save chat log:", e)
+
+def print_route_scores(router, query, top_k=5, sample_limit=10):
+    print(f"🔍 Query: {query}")
+    print("📌 Top route scores:")
+    query_vec = embedding_model.encode(query)
+    route_scores = []
+
+    print("✅ All loaded routes:")
+    for r in router.routes:
+        print(f" - {r.name} ({len(r.samples)} samples)")
+
+    for route in router.routes:
+        if not route.samples:
+            continue
+        limited_samples = route.samples[:sample_limit]
+        route_text = " ".join(limited_samples)
+        if not route_text.strip():
+            continue
+        route_vec = embedding_model.encode(route_text)
+        score = cos_sim(query_vec, route_vec)[0][0].item()
+        route_scores.append((route.name, score))
+
+    sorted_scores = sorted(route_scores, key=lambda x: x[1], reverse=True)
+    for name, score in sorted_scores[:top_k]:
+        print(f"🔎 {name}: {score:.4f}")
 @app.route('/api/search', methods=['POST'])
 def handle_query():
     try:
         data = list(request.get_json())
-        query = data[-1]["parts"][0]["text"].lower()
-
+        query = data[-1]["parts"][0]["text"].strip()
         if not query:
             return jsonify({'error': 'No query provided'}), 400
 
-        guidedRoute = semanticRouter.guide(query)[1]
-        if guidedRoute == 'products':
-            reflected_query = reflection(data)
-            query = reflected_query
-            source_information = rag.enhance_prompt(query).replace('<br>', '\n')
-            combined_information = (
-                f"Hãy trở thành chuyên gia tư vấn bán hàng cho một cửa hàng điện thoại. "
-                f"Câu hỏi của khách hàng: {query}\n"
-                f"Trả lời dựa vào các thông tin dưới đây: {source_information}."
-            )
-            data.append({
-                "role": "user",
-                "parts": [{"text": combined_information}]
-            })
+        print_route_scores(semanticRouter, query)
+        # scores = semanticRouter.guide(query)
+        # guidedRoute = scores[1] if scores else "chitchat"
+        query_vec = embedding_model.encode(query)
+        best_score = -1
+        guidedRoute = "chitchat"
 
-            response = rag.generate_content(data)
-            return jsonify({'parts': [{'text': response.text}], 'role': 'model'})
+        for route in semanticRouter.routes:
+            if not route.samples:
+                continue
+            route_text = " ".join(route.samples[:10])
+            if not route_text.strip():
+                continue
+            route_vec = embedding_model.encode(route_text)
+            score = cos_sim(query_vec, route_vec)[0][0].item()
+            if score > best_score:
+                best_score = score
+                guidedRoute = route.name
+
+        print(f"📌 Best matched route: {guidedRoute} (score: {best_score:.4f})")
+
+        # 1️⃣ Route: products
+        if guidedRoute == 'products':
+            query = reflection(data)
+            search_results = vector_search(query)
+            prompt = build_prompt(query, search_results)
+            messages = [
+                {"role": "system", "content": "Bạn là một trợ lý AI thông minh."},
+                {"role": "user", "content": prompt}
+            ]
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages
+            )
+            save_chat_log(messages)
+            return jsonify({"role": "model", "parts": [{"text": response.choices[0].message.content}]})
+
+        # 2️⃣ Route: dynamic route (ví dụ: máy massage xung điện tốt nhất)
+        elif guidedRoute not in {"products", "chitchat"}:
+            print(f"🧠 Detected dynamic route: {guidedRoute}")
+            query = reflection(data)
+            # ✅ Use rag.run() with topic filter
+            rag_prompt = rag.run(query, topic=guidedRoute)
+            print(f"🧠 rag_response rag_response rag_response=======: {rag_prompt}")
+
+            messages = [
+                {"role": "system", "content": "Bạn là một trợ lý AI thông minh."},
+                {"role": "user", "content": rag_prompt}
+            ]
+
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages
+            )
+            save_chat_log(messages)
+            return jsonify({"role": "model", "parts": [{"text": response.choices[0].message.content}]})
+
+        # 3️⃣ Route: chitchat
         else:
-            openai_messages = [
-                {"role": m["role"], "content": m["parts"][0]["text"]}
+            chat_messages = [
+                {
+                    "role": "assistant" if m["role"] == "model" else m["role"],
+                    "content": m["parts"][0]["text"]
+                }
                 for m in data
             ]
             response = llm.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=openai_messages
+                messages=chat_messages
             )
-            return jsonify({
-                'parts': [{'text': response.choices[0].message.content}],
-                'role': 'model'
-            })
+            save_chat_log(chat_messages)
+            return jsonify({"role": "model", "parts": [{"text": response.choices[0].message.content}]})
 
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
-# === Endpoint: /ask (Mongo vector search) ===
-@app.route("/ask", methods=["POST"])
-def ask():
+@app.route('/api/feedback', methods=['POST'])
+def save_feedback():
     try:
-        messages = request.get_json()
-        user_message = next((m for m in reversed(messages) if m.get("role") == "user"), None)
-        query = user_message["parts"][0]["text"] if user_message else ""
-        if not query.strip():
-            return jsonify({"error": "Empty query"}), 400
-
-        search_results = vector_search(query, limit=5)
-        prompt = build_prompt(query, search_results)
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Bạn là một trợ lý AI thông minh."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7
-        )
-
-        return jsonify({
-            "role": "model",
-            "parts": [{"text": response.choices[0].message.content}]
+        data = request.get_json()
+        message = data.get("message", "").strip()
+        feedback = data.get("feedback")
+        if not message or feedback not in ["like", "dislike"]:
+            return jsonify({"error": "Invalid feedback data"}), 400
+        client[DB_NAME]["ai_feedback"].insert_one({
+            "message": message,
+            "feedback": feedback,
+            "timestamp": datetime.utcnow()
         })
+        return jsonify({"status": "success"}), 200
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": f"Processing error: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
-# === Run server ===
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5002, debug=False)
+    app.run(host='0.0.0.0', port=5002, debug=True)
