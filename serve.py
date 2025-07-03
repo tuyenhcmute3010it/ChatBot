@@ -274,5 +274,33 @@ def save_feedback():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+@app.route("/ask", methods=["POST"])
+def ask():
+    try:
+        messages = request.get_json()
+        user_message = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+        query = user_message["parts"][0]["text"] if user_message else ""
+        if not query.strip():
+            return jsonify({"error": "Empty query"}), 400
+
+        search_results = vector_search(query, limit=5)
+        prompt = build_prompt(query, search_results)
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Bạn là một trợ lý AI thông minh."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7
+        )
+
+        return jsonify({
+            "role": "model",
+            "parts": [{"text": response.choices[0].message.content}]
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": f"Processing error: {str(e)}"}), 500
+    
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
