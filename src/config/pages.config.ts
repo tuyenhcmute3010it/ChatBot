@@ -77,7 +77,7 @@ export const appPages = {
 					replaceObject: {
 						id: 'ReplaceObject',
 						to: '/ai/chat/replace-object',
-						text: 'Object Replacement',
+						text: 'Craw Data',
 						icon: 'HeroPhoto',
 					},
 					segementInpaint: {

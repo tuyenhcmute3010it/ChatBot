@@ -1,31 +1,13 @@
-// import axios from 'axios';
-// import { AI_DEMOS_URI, HOST } from '@/constant';
-
-// export function postQuestionsApiCall(data: {
-// 	dataToPost: {
-// 		messages: IChat[];
-// 	};
-// }) {
-// 	const { dataToPost } = data;
-// 	return axios({
-// 		method: 'post',
-// 		// url: `http://127.0.0.1:5000/chat`,
-// 		url: `http://127.0.0.1:5000/api/search`,
-// 		data: dataToPost,
-// 	});
-// }
-
-import axios from 'axios';
-
-export function postQuestionsApiCall(data: {
+export async function postQuestionsApiCall(data: {
 	dataToPost: {
 		messages: {
 			role: string;
 			content: string;
 		}[];
 	};
+	onChunk: (text: string) => void;
 }) {
-	const { dataToPost } = data;
+	const { dataToPost, onChunk } = data;
 
 	const convertedMessages = dataToPost.messages.map((msg) => ({
 		role: msg.role,
@@ -34,16 +16,33 @@ export function postQuestionsApiCall(data: {
 
 	console.log('📤 Dữ liệu gửi lên backend:', convertedMessages);
 
-	return axios({
-		method: 'post',
-		url: `http://127.0.0.1:5002/api/search`,
-		data: convertedMessages,
-	})
-		.then((res) => {
-			console.log('📥 Phản hồi từ backend:', res.data); // << 👈 Xem log này có in không
-			return res.data;
-		})
-		.catch((err) => {
-			console.error('❌ Lỗi khi gọi API:', err);
-		});
+	const response = await fetch(`http://127.0.0.1:5002/api/search`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+		},
+		body: JSON.stringify(convertedMessages),
+	});
+
+	if (!response.ok || !response.body) {
+		throw new Error('Phản hồi từ server không hợp lệ');
+	}
+
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder('utf-8');
+	let fullText = '';
+
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+
+		const chunk = decoder.decode(value, { stream: true });
+		fullText += chunk;
+		onChunk(chunk);
+	}
+
+	return {
+		role: 'model',
+		parts: [{ text: fullText }],
+	};
 }

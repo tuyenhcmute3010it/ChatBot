@@ -95,6 +95,19 @@ const DefaultAsideTemplate = () => {
 							to={appPages.aiAppPages.subPages.chatPages.to}
 							icon={appPages.aiAppPages.subPages.chatPages.icon}>
 							<NavItem
+								{...appPages.aiAppPages.subPages.chatPages.subPages.replaceObject}
+							/>
+
+							{/* <NavItem {...appPages.aiAppPages.subPages.chatPages.subPages.videoPage}>
+								<Badge
+									variant='outline'
+									color='violet'
+									className='!border-transparent leading-none'>
+									8
+								</Badge>
+							</NavItem> */}
+
+							<NavItem
 								{...appPages?.aiAppPages?.subPages?.chatPages?.subPages?.ragPage}
 							/>
 							{/* <NavItem {...appPages.aiAppPages.subPages.chatPages.subPages.codePage}>

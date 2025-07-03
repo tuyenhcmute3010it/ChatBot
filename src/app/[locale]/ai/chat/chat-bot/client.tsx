@@ -22,7 +22,6 @@ const ChatBotClient = () => {
 			content: 'How would you like me to help you?',
 		},
 	] as IChat[]);
-
 	const [askGptApiStatus, setAskGptApiStatus] = useState(CREATED);
 	const stopGeneratingRef = useRef(false);
 
@@ -35,52 +34,79 @@ const ChatBotClient = () => {
 		},
 	});
 
-	const sendQuestionOnClick = (question: string) => {
+	const sendQuestionOnClick = async (question: string) => {
 		try {
 			stopGeneratingRef.current = false;
 
-			if (question) {
-				formik.resetForm();
-				setAskGptApiStatus(PENDING);
+			if (!question) return;
 
-				const newUserMessage: IChat = {
-					role: USER,
-					content: question,
-				};
+			formik.resetForm();
+			setAskGptApiStatus(PENDING);
 
-				const updatedList = [...listQuestions, newUserMessage];
-				setListQuestions(updatedList);
+			const newUserMessage: IChat = {
+				role: USER,
+				content: question,
+			};
 
-				postQuestionsApiCall({
-					dataToPost: {
-						messages: updatedList,
-					},
-				})
-					.then((res) => {
-						if (res?.parts?.[0]?.text) {
-							setAskGptApiStatus(SUCCESSFUL);
+			const updatedList = [...listQuestions, newUserMessage];
+			setListQuestions(updatedList);
 
-							if (!stopGeneratingRef.current) {
-								const responseMessage: IChat = {
-									role: res.role === 'model' ? ASSISTANT : res.role,
-									content: res.parts[0].text,
-								};
+			let streamedContent = ''; // Tích lũy phản hồi
+			let newMessage: IChat = {
+				role: ASSISTANT,
+				content: '',
+			};
+			setListQuestions((prev) => [...prev, newMessage]);
 
-								setListQuestions((prev) => [...prev, responseMessage]);
-							}
-						} else {
-							setAskGptApiStatus(FAILED);
-							console.warn('⚠️ Không có nội dung trả về:', res);
-						}
-					})
-					.catch((e) => {
-						console.error('❌ Gọi API thất bại:', e);
-						setAskGptApiStatus(FAILED);
+			await postQuestionsApiCall({
+				dataToPost: { messages: updatedList },
+				onChunk: (chunk: string) => {
+					if (stopGeneratingRef.current) return;
+					streamedContent += chunk;
+					newMessage.content = streamedContent;
+
+					// Cập nhật realtime nội dung message cuối cùng
+					setListQuestions((prev) => {
+						const temp = [...prev];
+						temp[temp.length - 1] = { ...newMessage };
+						return temp;
 					});
-			}
+				},
+			});
+
+			setAskGptApiStatus(SUCCESSFUL);
 		} catch (err) {
-			console.error('❌ Lỗi trong sendQuestionOnClick:', err);
+			console.error('❌ Error in sendQuestionOnClick:', err);
 			setAskGptApiStatus(FAILED);
+		}
+	};
+
+	// Function to send feedback to the backend
+	const sendFeedback = async (message: string, feedback: 'like' | 'dislike') => {
+		try {
+			console.log('🟢 Sending feedback...');
+			console.log('Message:', message);
+			console.log('Feedback:', feedback);
+
+			const response = await fetch('http://127.0.0.1:5002/api/feedback', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+				},
+				body: JSON.stringify({ message, feedback }),
+			});
+
+			console.log('🔵 Response status:', response.status);
+
+			if (!response.ok) {
+				const errorData = await response.text();
+				console.error('❌ Failed to send feedback:', errorData);
+				throw new Error('Failed to send feedback');
+			}
+
+			console.log(`✅ Feedback (${feedback}) sent successfully`);
+		} catch (error) {
+			console.error('❌ Error sending feedback:', error);
 		}
 	};
 
@@ -92,11 +118,36 @@ const ChatBotClient = () => {
 					{questions?.map((question, index) => {
 						return (
 							<AIChatItemContainerCommon
-								key={question?.content}
+								key={`${question?.content}-${index}`} // Ensure unique key
 								content={question?.content}
 								userName={question?.role === USER ? 'You' : 'AI'}
-								isAnswer={question?.role === SYSTEM || question?.role === ASSISTANT}
-							/>
+								isAnswer={
+									question?.role === SYSTEM || question?.role === ASSISTANT
+								}>
+								{/* Add Like/Dislike buttons only for AI responses */}
+								{(question?.role === ASSISTANT || question?.role === SYSTEM) && (
+									<div className='mt-2 flex gap-2'>
+										<Button
+											icon='HeroThumbUp'
+											size='sm'
+											variant='outline'
+											onClick={() => sendFeedback(question.content, 'like')}
+											aria-label='Like this response'>
+											Like
+										</Button>
+										<Button
+											icon='HeroThumbDown'
+											size='sm'
+											variant='outline'
+											onClick={() =>
+												sendFeedback(question.content, 'dislike')
+											}
+											aria-label='Dislike this response'>
+											Dislike
+										</Button>
+									</div>
+								)}
+							</AIChatItemContainerCommon>
 						);
 					})}
 					{askGptApiStatus === PENDING && !stopGeneratingRef.current && (
@@ -114,7 +165,8 @@ const ChatBotClient = () => {
 											stopGeneratingRef.current = true;
 											setAskGptApiStatus(FAILED);
 										}}
-										icon='HeroStop'></Button>
+										icon='HeroStop'
+									/>
 								</div>
 							</div>
 						</AIChatItemContainerCommon>
