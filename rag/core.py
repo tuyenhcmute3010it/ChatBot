@@ -80,50 +80,50 @@ class RAG:
 
         final_prompt = f"""Bạn là một chuyên gia tư vấn bán điện thoại tại cửa hàng **DBIZ**.
 
-**Câu hỏi của khách hàng:** _{user_query}_
+        **Câu hỏi của khách hàng:** _{user_query}_
 
-Dưới đây là chi tiết sản phẩm:
+        Dưới đây là chi tiết sản phẩm:
 
-{context}
-Vui lòng trả lời khách một cách thân thiện, dễ hiểu và rõ ràng!  
-Nếu khách hàng muốn biết thêm, hãy mời họ bấm vào link để xem chi tiết sản phẩm.
-"""
+        {context}
+        Vui lòng trả lời khách một cách thân thiện, dễ hiểu và rõ ràng!  
+        Nếu khách hàng muốn biết thêm, hãy mời họ bấm vào link để xem chi tiết sản phẩm.
+        """
         return final_prompt
 
-def run(self, query, topic=None):
-    try:
-        print(f"🧠 [run()] Query: {query}")
-        if topic:
-            print(f"🧠 [run()] Topic: {topic}")
+    def run(self, query, topic=None):
+        try:
+            print(f"🧠 [run()] Query: {query}")
+            if topic:
+                print(f"🧠 [run()] Topic: {topic}")
 
-        query_embedding = self.get_embedding(query)
-        if not query_embedding:
-            print("⚠️ [run()] Failed to generate query embedding.")
-            return "❌ Không thể tạo embedding cho câu hỏi."
+            query_embedding = self.get_embedding(query)
+            if not query_embedding:
+                print("⚠️ [run()] Failed to generate query embedding.")
+                return "❌ Không thể tạo embedding cho câu hỏi."
 
-        print(f"🧠 [run()] Embedding OK, length: {len(query_embedding)}")
+            print(f"🧠 [run()] Embedding OK, length: {len(query_embedding)}")
 
-        search_results = self.vector_search(query, limit=10, topic=topic)
-        print(f"🧠 [run()] Retrieved {len(search_results)} results")
+            search_results = self.vector_search(query, limit=10, topic=topic)
+            print(f"🧠 [run()] Retrieved {len(search_results)} results")
 
-        context = "\n\n".join([
-            f"{doc['content']} (Nguồn: {doc.get('url', 'không rõ')})"
-            for doc in search_results if "content" in doc
-        ])
-        if not context:
-            print("⚠️ [run()] No relevant documents found.")
-            context = "Không tìm thấy thông tin phù hợp trong cơ sở dữ liệu."
-            
-        print("===================================================== {Start Data from Db} ========================================")
-        print(context)
-        print("===================================================== {End Data from Db} ========================================")
-        print("===================================================== {Start Truyền dữ liệu lên LLM từ Prompt và Data trên DB} ========================================")
-        prompt = f"""Khách hỏi: \"{query}\"\n\nDưới đây là một số thông tin liên quan:\n\n{context}\n\nTrả lời một cách tự nhiên và chi tiết."""
-        print(prompt)
-        print("===================================================== {End Truyền dữ liệu lên LLM từ Prompt và Data trên DB} ========================================")
-        return prompt
+            context = "\n\n".join([
+                f"{doc['content']} (Nguồn: {doc.get('url', 'không rõ')})"
+                for doc in search_results if "content" in doc
+            ])
+            if not context:
+                print("⚠️ [run()] No relevant documents found.")
+                context = "Không tìm thấy thông tin phù hợp trong cơ sở dữ liệu."
+                
+            print("===================================================== {Start Data from Db} ========================================")
+            print(context)
+            print("===================================================== {End Data from Db} ========================================")
+            print("===================================================== {Start Truyền dữ liệu lên LLM từ Prompt và Data trên DB} ========================================")
+            prompt = f"""Khách hỏi: \"{query}\"\n\nDưới đây là một số thông tin liên quan:\n\n{context}\n\nTrả lời một cách tự nhiên và chi tiết."""
+            print(prompt)
+            print("===================================================== {End Truyền dữ liệu lên LLM từ Prompt và Data trên DB} ========================================")
+            return prompt
 
-    except Exception as e:
-        print("❌ [run()] Exception occurred:", e)
-        traceback.print_exc()
-        return f"❌ Lỗi khi thực hiện tìm kiếm vector: {str(e)}"
+        except Exception as e:
+            print("❌ [run()] Exception occurred:", e)
+            traceback.print_exc()
+            return f"❌ Lỗi khi thực hiện tìm kiếm vector: {str(e)}"

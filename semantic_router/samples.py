@@ -50,6 +50,12 @@ productsSample = [
     "Dung lượng lưu trữ của iPhone 12 là bao nhiêu?",
     "Bạn có Honor Magic 3 không?",
     "Xiaomi Mi 11 Ultra có sẵn không?"
+    "Tôi muốn mua điện thoại hiệu năng cao",
+    "Gợi ý giúp tôi một chiếc smartphone tốt",
+    "Tư vấn điện thoại chụp ảnh đẹp",
+    "Có điện thoại nào pin trâu không?",
+    "Tôi muốn mua điện thoại tầm trung chất lượng tốt",
+    "Tư vấn giúp tôi một chiếc điện thoại đáng mua",
 ]
 
 
